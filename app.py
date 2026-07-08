@@ -22,7 +22,6 @@ class Staff(db.Model):
     name = db.Column(db.String(50), nullable=False)
     store_id = db.Column(db.Integer, db.ForeignKey('store.id'), nullable=False)
     role = db.Column(db.String(20), default='スタッフ')
-    # ✨ 表示用の「店舗内での社員番号 (1〜20)」を持たせるフィールドを追加
     staff_number = db.Column(db.Integer, nullable=False)
 
 class Store(db.Model):
@@ -53,7 +52,7 @@ class Notification(db.Model):
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.now)
 
-# ✨ 初期データ作成（渋谷店のみ、1〜20番を登録）
+# 初期データ作成
 def init_master_data():
     db.create_all()
     if not Store.query.first():
@@ -91,7 +90,6 @@ def login():
             flash('店舗名が正しくありません。', 'danger')
             return redirect(url_for('login'))
 
-        # ✨ 入力された「1〜20番」がその店舗に存在するかを正確にチェック
         staff = Staff.query.filter_by(staff_number=input_number, store_id=store.id).first()
 
         if staff:
@@ -105,7 +103,6 @@ def login():
             
     return render_template('login.html', stores=Store.query.all())
 
-# ✨ 新店舗登録 ＋ その店舗専用の1〜20番を完全自動生成
 @app.route('/add_store', methods=['POST'])
 def add_store():
     new_store_name = request.form.get('new_store_name')
@@ -116,11 +113,9 @@ def add_store():
             db.session.add(new_store)
             db.session.commit()
             
-            # システム全体で絶対に重複しないベースIDを算出
             max_staff_id = db.session.query(db.func.max(Staff.id)).scalar() or 0
             start_id = max_staff_id + 1
             
-            # その店舗用に1〜20の番号を紐づけて作成
             for i in range(1, 21):
                 current_id = start_id + (i - 1)
                 new_staff = Staff(
@@ -128,7 +123,7 @@ def add_store():
                     name=f"{new_store_name}スタッフ_{i}", 
                     store_id=new_store.id, 
                     role='スタッフ',
-                    staff_number=i # ログインに使うための 1〜20 の番号
+                    staff_number=i
                 )
                 db.session.add(new_staff)
             db.session.commit()
@@ -174,16 +169,45 @@ def calendar():
         time_range = request.form.get('time_range') 
         start_time, end_time = time_range.split('-')
 
+        # ✨ 空き時間登録 ＆ シフト自動組み込み処理
         if action_type == 'register_availability':
-            exists = Availability.query.filter_by(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time).first()
-            if not exists:
-                new_avail = Availability(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time)
-                db.session.add(new_avail)
-                db.session.commit()
-                flash(f'{date} {time_range} を「空き時間」として登録しました！', 'success')
-            else:
-                flash('その時間帯の空き時間は既に登録されています。', 'warning')
+            # 先に対象時間の現在のシフト人数をチェック
+            existing_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
+            current_staff_ids = [s.staff_id for s in existing_shifts]
 
+            # 🛑 既に3人埋まっている場合はブロックする
+            if len(current_staff_ids) >= 3:
+                flash(f'【登録不可】{date} {time_range} のシフトはすでに3名でいっぱいのため登録できません。', 'danger')
+            else:
+                # 空き時間の重複チェック
+                exists_avail = Availability.query.filter_by(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time).first()
+                if not exists_avail:
+                    new_avail = Availability(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time)
+                    db.session.add(new_avail)
+                    
+                    # 🔗 【自動連動】まだシフトに登録されていなければ自動でシフトにも組み込む
+                    if staff_id not in current_staff_ids:
+                        new_shift = Shift(staff_id=staff_id, store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='未確定')
+                        db.session.add(new_shift)
+                        db.session.commit()
+
+                        # 3人揃ったか再確認して自動確定処理
+                        updated_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
+                        if len(updated_shifts) == 3:
+                            for s in updated_shifts:
+                                s.status = '確定'
+                                db.session.add(Notification(staff_id=s.staff_id, content=f"【シフト確定】{date} {start_time}-{end_time} が確定しました。"))
+                            db.session.commit()
+                            flash(f'{date} {time_range} を登録しました。3名に達したため【シフト確定】しました！', 'success')
+                        else:
+                            flash(f'{date} {time_range} を空き時間として登録し、自動でシフトへ組み込みました！', 'success')
+                    else:
+                        db.session.commit()
+                        flash(f'{date} {time_range} を空き時間として登録しました。', 'success')
+                else:
+                    flash('その時間帯の空き時間は既に登録されています。', 'warning')
+
+        # シフト希望枠へ直接入る処理（手動用も一応残しています）
         elif action_type == 'register_shift':
             existing_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
             current_staff_ids = [s.staff_id for s in existing_shifts]
