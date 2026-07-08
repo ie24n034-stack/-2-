@@ -241,5 +241,3 @@ if __name__ == '__main__':
     with app.app_context():
         init_master_data()
     app.run(debug=True, port=5000)
-        init_master_data()
-    app.run(debug=True, port=5000)
