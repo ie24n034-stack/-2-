@@ -22,11 +22,12 @@ class Staff(db.Model):
     name = db.Column(db.String(50), nullable=False)
     store_id = db.Column(db.Integer, db.ForeignKey('store.id'), nullable=False)
     role = db.Column(db.String(20), default='スタッフ')
+    # ✨ 表示用の「店舗内での社員番号 (1〜20)」を持たせるフィールドを追加
+    staff_number = db.Column(db.Integer, nullable=False)
 
 class Store(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     store_name = db.Column(db.String(50), unique=True, nullable=False)
-    # 店舗が消えたら、その店舗のシフトやスタッフ、空き時間も自動で消えるように連動設定
     staffs = db.relationship('Staff', backref='store', cascade='all, delete-orphan')
     shifts = db.relationship('Shift', backref='store', cascade='all, delete-orphan')
 
@@ -52,7 +53,7 @@ class Notification(db.Model):
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.now)
 
-# ✨ 初期データ作成（新宿・池袋を削除し、渋谷店のみに変更）
+# ✨ 初期データ作成（渋谷店のみ、1〜20番を登録）
 def init_master_data():
     db.create_all()
     if not Store.query.first():
@@ -60,9 +61,8 @@ def init_master_data():
         db.session.add(shibuya)
         db.session.commit()
         
-        # 渋谷店のスタッフ（1〜20）
         for i in range(1, 21):
-            staff = Staff(id=i, name=f"渋谷太郎_{i}", store_id=shibuya.id, role='スタッフ')
+            staff = Staff(id=i, name=f"渋谷太郎_{i}", store_id=shibuya.id, role='スタッフ', staff_number=i)
             db.session.add(staff)
         db.session.commit()
 
@@ -81,7 +81,7 @@ def login():
     if request.method == 'POST':
         store_name = request.form.get('store_name')
         try:
-            staff_id = int(request.form.get('staff_id'))
+            input_number = int(request.form.get('staff_id'))
         except ValueError:
             flash('社員番号は数字で入力してください。', 'danger')
             return redirect(url_for('login'))
@@ -91,7 +91,8 @@ def login():
             flash('店舗名が正しくありません。', 'danger')
             return redirect(url_for('login'))
 
-        staff = Staff.query.filter_by(id=staff_id, store_id=store.id).first()
+        # ✨ 入力された「1〜20番」がその店舗に存在するかを正確にチェック
+        staff = Staff.query.filter_by(staff_number=input_number, store_id=store.id).first()
 
         if staff:
             session['staff_id'] = staff.id
@@ -100,36 +101,34 @@ def login():
             session['store_name'] = store.store_name
             return redirect(url_for('calendar'))
         else:
-            flash(f'「{store_name}」に社員番号 {staff_id} は登録されていません。', 'danger')
+            flash(f'「{store_name}」に社員番号 {input_number} は登録されていません。', 'danger')
             
     return render_template('login.html', stores=Store.query.all())
 
-# ✨ 新店舗をデータベースに登録する＋社員番号（1〜20）を自動生成
+# ✨ 新店舗登録 ＋ その店舗専用の1〜20番を完全自動生成
 @app.route('/add_store', methods=['POST'])
 def add_store():
     new_store_name = request.form.get('new_store_name')
     if new_store_name:
         exists = Store.query.filter_by(store_name=new_store_name).first()
         if not exists:
-            # 1. 店舗を登録
             new_store = Store(store_name=new_store_name)
             db.session.add(new_store)
             db.session.commit()
             
-            # 2. その店舗用の社員番号（1〜20）を自動作成
-            # 全店舗で重複しない一意のIDの割り出し（現在の最大値 + 1 からスタート）
-            max_staff = db.session.query(db.func.max(Staff.id)).scalar() or 0
-            start_id = max_staff + 1
+            # システム全体で絶対に重複しないベースIDを算出
+            max_staff_id = db.session.query(db.func.max(Staff.id)).scalar() or 0
+            start_id = max_staff_id + 1
             
-            for offset in range(20):
-                current_id = start_id + offset
-                # 表示用としての「1〜20番」という名前を付ける
-                staff_num = offset + 1
+            # その店舗用に1〜20の番号を紐づけて作成
+            for i in range(1, 21):
+                current_id = start_id + (i - 1)
                 new_staff = Staff(
                     id=current_id, 
-                    name=f"{new_store_name}スタッフ_{staff_num}", 
+                    name=f"{new_store_name}スタッフ_{i}", 
                     store_id=new_store.id, 
-                    role='スタッフ'
+                    role='スタッフ',
+                    staff_number=i # ログインに使うための 1〜20 の番号
                 )
                 db.session.add(new_staff)
             db.session.commit()
@@ -140,7 +139,6 @@ def add_store():
             
     return redirect(url_for('login'))
 
-# ✨ 店舗を削除するルート
 @app.route('/delete_store', methods=['POST'])
 def delete_store():
     store_name_to_delete = request.form.get('store_name')
@@ -150,12 +148,10 @@ def delete_store():
         
     store = Store.query.filter_by(store_name=store_name_to_delete).first()
     if store:
-        # 紐づく通知などを手動でクリーンアップ
         staff_ids = [s.id for s in store.staffs]
         Notification.query.filter(Notification.staff_id.in_(staff_ids)).delete(synchronize_session=False)
         Availability.query.filter(Availability.staff_id.in_(staff_ids)).delete(synchronize_session=False)
         
-        # 店舗（と連動したスタッフ、シフト）を削除
         db.session.delete(store)
         db.session.commit()
         flash(f'店舗「{store_name_to_delete}」と、所属する全データを削除しました。', 'success')
