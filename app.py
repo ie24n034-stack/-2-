@@ -14,7 +14,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # ==========================================
-# 📊 データベースモデル設定 (design.md 準拠)
+# 📊 データベースモデル設定
 # ==========================================
 
 class Staff(db.Model):
@@ -26,18 +26,20 @@ class Staff(db.Model):
 class Store(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     store_name = db.Column(db.String(50), unique=True, nullable=False)
+    # 店舗が消えたら、その店舗のシフトやスタッフ、空き時間も自動で消えるように連動設定
+    staffs = db.relationship('Staff', backref='store', cascade='all, delete-orphan')
+    shifts = db.relationship('Shift', backref='store', cascade='all, delete-orphan')
 
 class Availability(db.Model):
-    """勤務希望（スタッフが空いている時間を登録するテーブル）"""
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id'), nullable=False)
+    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id', ondelete='CASCADE'), nullable=False)
     date = db.Column(db.String(20), nullable=False)       
     start_time = db.Column(db.String(10), nullable=False) 
     end_time = db.Column(db.String(10), nullable=False)   
 
 class Shift(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id'), nullable=False)
+    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id', ondelete='CASCADE'), nullable=False)
     store_id = db.Column(db.Integer, db.ForeignKey('store.id'), nullable=False)
     date = db.Column(db.String(20), nullable=False)
     start_time = db.Column(db.String(10), nullable=False)
@@ -46,19 +48,19 @@ class Shift(db.Model):
 
 class Notification(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id'), nullable=False)
+    staff_id = db.Column(db.Integer, db.ForeignKey('staff.id', ondelete='CASCADE'), nullable=False)
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.now)
 
-# 初期データ作成
+# ✨ 初期データ作成（新宿・池袋を削除し、渋谷店のみに変更）
 def init_master_data():
     db.create_all()
     if not Store.query.first():
-        stores = [Store(store_name='渋谷店'), Store(store_name='新宿店'), Store(store_name='池袋店')]
-        db.session.add_all(stores)
+        shibuya = Store(store_name='渋谷店')
+        db.session.add(shibuya)
         db.session.commit()
         
-        shibuya = Store.query.filter_by(store_name='渋谷店').first()
+        # 渋谷店のスタッフ（1〜20）
         for i in range(1, 21):
             staff = Staff(id=i, name=f"渋谷太郎_{i}", store_id=shibuya.id, role='スタッフ')
             db.session.add(staff)
@@ -85,6 +87,10 @@ def login():
             return redirect(url_for('login'))
 
         store = Store.query.filter_by(store_name=store_name).first()
+        if not store:
+            flash('店舗名が正しくありません。', 'danger')
+            return redirect(url_for('login'))
+
         staff = Staff.query.filter_by(id=staff_id, store_id=store.id).first()
 
         if staff:
@@ -94,25 +100,68 @@ def login():
             session['store_name'] = store.store_name
             return redirect(url_for('calendar'))
         else:
-            flash('店舗名、または社員番号が正しくありません。', 'danger')
+            flash(f'「{store_name}」に社員番号 {staff_id} は登録されていません。', 'danger')
             
     return render_template('login.html', stores=Store.query.all())
 
-# ✨ 🆕 新店舗をデータベースに登録するルート設定
+# ✨ 新店舗をデータベースに登録する＋社員番号（1〜20）を自動生成
 @app.route('/add_store', methods=['POST'])
 def add_store():
     new_store_name = request.form.get('new_store_name')
     if new_store_name:
-        # すでに同じ名前の店舗がないかチェック
         exists = Store.query.filter_by(store_name=new_store_name).first()
         if not exists:
+            # 1. 店舗を登録
             new_store = Store(store_name=new_store_name)
             db.session.add(new_store)
             db.session.commit()
-            flash(f'店舗「{new_store_name}」を新しく登録しました！', 'success')
+            
+            # 2. その店舗用の社員番号（1〜20）を自動作成
+            # 全店舗で重複しない一意のIDの割り出し（現在の最大値 + 1 からスタート）
+            max_staff = db.session.query(db.func.max(Staff.id)).scalar() or 0
+            start_id = max_staff + 1
+            
+            for offset in range(20):
+                current_id = start_id + offset
+                # 表示用としての「1〜20番」という名前を付ける
+                staff_num = offset + 1
+                new_staff = Staff(
+                    id=current_id, 
+                    name=f"{new_store_name}スタッフ_{staff_num}", 
+                    store_id=new_store.id, 
+                    role='スタッフ'
+                )
+                db.session.add(new_staff)
+            db.session.commit()
+            
+            flash(f'店舗「{new_store_name}」を登録し、社員番号(1〜20)を自動割り当てしました！', 'success')
         else:
             flash('その店舗名は既に登録されています。', 'warning')
             
+    return redirect(url_for('login'))
+
+# ✨ 店舗を削除するルート
+@app.route('/delete_store', methods=['POST'])
+def delete_store():
+    store_name_to_delete = request.form.get('store_name')
+    if store_name_to_delete == '渋谷店':
+        flash('「渋谷店」は初期店舗のため削除できません。', 'danger')
+        return redirect(url_for('login'))
+        
+    store = Store.query.filter_by(store_name=store_name_to_delete).first()
+    if store:
+        # 紐づく通知などを手動でクリーンアップ
+        staff_ids = [s.id for s in store.staffs]
+        Notification.query.filter(Notification.staff_id.in_(staff_ids)).delete(synchronize_session=False)
+        Availability.query.filter(Availability.staff_id.in_(staff_ids)).delete(synchronize_session=False)
+        
+        # 店舗（と連動したスタッフ、シフト）を削除
+        db.session.delete(store)
+        db.session.commit()
+        flash(f'店舗「{store_name_to_delete}」と、所属する全データを削除しました。', 'success')
+    else:
+        flash('削除対象の店舗が見つかりませんでした。', 'warning')
+        
     return redirect(url_for('login'))
 
 @app.route('/calendar', methods=['GET', 'POST'])
@@ -129,7 +178,6 @@ def calendar():
         time_range = request.form.get('time_range') 
         start_time, end_time = time_range.split('-')
 
-        # 空き時間の登録
         if action_type == 'register_availability':
             exists = Availability.query.filter_by(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time).first()
             if not exists:
@@ -140,7 +188,6 @@ def calendar():
             else:
                 flash('その時間帯の空き時間は既に登録されています。', 'warning')
 
-        # シフト希望枠へ入る処理
         elif action_type == 'register_shift':
             existing_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
             current_staff_ids = [s.staff_id for s in existing_shifts]
@@ -154,7 +201,6 @@ def calendar():
                 db.session.add(new_shift)
                 db.session.commit()
 
-                # 3人揃ったら自動確定
                 updated_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
                 if len(updated_shifts) == 3:
                     for s in updated_shifts:
@@ -171,7 +217,6 @@ def calendar():
 
     return render_template('calendar.html', shifts=all_shifts, my_avails=my_availabilities, my_id=staff_id, notif_count=notif_count)
 
-# 【コア機能】欠勤キャンセル ＆ 空いている人限定の通知
 @app.route('/cancel/<int:shift_id>')
 def cancel(shift_id):
     if 'staff_id' not in session:
@@ -187,17 +232,14 @@ def cancel(shift_id):
         db.session.delete(target_shift)
         db.session.commit()
 
-        # 残ったメンバーを未確定に戻す
         remaining_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
         for s in remaining_shifts:
             s.status = '未確定'
         db.session.commit()
 
-        # 人手不足時の【新・通知ロジック】
         if len(remaining_shifts) <= 2:
             already_working_ids = [s.staff_id for s in remaining_shifts]
             
-            # 「この日この時間が空いている」と出している人だけをピンポイント抽出
             available_staffs = Availability.query.filter(
                 Availability.date == date,
                 Availability.start_time == start_time,
@@ -217,9 +259,9 @@ def cancel(shift_id):
             db.session.commit()
 
             if notified_ids:
-                flash(f'シフトを辞退しました。この時間に【空いているスタッフ（社員番号: {notified_ids}）】限定で応援依頼を送りました。', 'warning')
+                flash('シフトを辞退しました。空いているスタッフに応援依頼を送りました。', 'warning')
             else:
-                flash('シフトを辞退しました。（現在、この時間帯に空いている登録のあるスタッフはいません）', 'warning')
+                flash('シフトを辞退しました。', 'warning')
         else:
             flash('シフトをキャンセルしました。', 'success')
 
