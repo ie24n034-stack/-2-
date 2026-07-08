@@ -36,6 +36,8 @@ class Availability(db.Model):
     date = db.Column(db.String(20), nullable=False)       
     start_time = db.Column(db.String(10), nullable=False) 
     end_time = db.Column(db.String(10), nullable=False)   
+    # ✨ 登録順を記録するために日時を記録するフィールドを追加
+    created_at = db.Column(db.DateTime, default=datetime.now)
 
 class Shift(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -44,7 +46,7 @@ class Shift(db.Model):
     date = db.Column(db.String(20), nullable=False)
     start_time = db.Column(db.String(10), nullable=False)
     end_time = db.Column(db.String(10), nullable=False)
-    status = db.Column(db.String(20), default='未確定')
+    status = db.Column(db.String(20), default='未確定') # '未確定', '確定', 'リザーブ'
 
 class Notification(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -169,67 +171,59 @@ def calendar():
         time_range = request.form.get('time_range') 
         start_time, end_time = time_range.split('-')
 
-        # ✨ 空き時間登録 ＆ シフト自動組み込み処理
+        # ✨ 空き時間登録 ＆ シフト自動・リザーブ組み込み処理
         if action_type == 'register_availability':
-            # 先に対象時間の現在のシフト人数をチェック
-            existing_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
-            current_staff_ids = [s.staff_id for s in existing_shifts]
+            # 現在「確定」しているシフトの人数を確認
+            confirmed_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
+            
+            # 既にこの時間帯に自分が登録されているかチェック（確定・未確定・リザーブ問わず）
+            already_in_shift = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, staff_id=staff_id).first()
+            
+            # 空き時間の重複チェック
+            exists_avail = Availability.query.filter_by(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time).first()
+            
+            if not exists_avail:
+                # 1. 空き時間自体はいつでも保存（登録）できるようにする
+                new_avail = Availability(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time)
+                db.session.add(new_avail)
 
-            # 🛑 既に3人埋まっている場合はブロックする
-            if len(current_staff_ids) >= 3:
-                flash(f'【登録不可】{date} {time_range} のシフトはすでに3名でいっぱいのため登録できません。', 'danger')
-            else:
-                # 空き時間の重複チェック
-                exists_avail = Availability.query.filter_by(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time).first()
-                if not exists_avail:
-                    new_avail = Availability(staff_id=staff_id, date=date, start_time=start_time, end_time=end_time)
-                    db.session.add(new_avail)
+                # 2. シフトへの連動ロジック
+                if not already_in_shift:
+                    # すでに「確定が3名」いる場合は、4人目以降として「リザーブ枠」で保存する
+                    if len(confirmed_shifts) >= 3:
+                        new_shift = Shift(staff_id=staff_id, store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='リザーブ')
+                        db.session.add(new_shift)
+                        db.session.commit()
+                        
+                        # 指定のメッセージで通知を送信
+                        db.session.add(Notification(
+                            staff_id=staff_id,
+                            content=f"【リザーブ登録】{date} {start_time}-{end_time} はすでに3名で埋まっています。あなたはこのシフトに入れることは確定していませんが、欠員が出たらあなたはこのシフトに入ることになります。"
+                        ))
+                        db.session.commit()
+                        flash(f'{date} {time_range} をリザーブ（補欠）枠として保存しました。', 'info')
                     
-                    # 🔗 【自動連動】まだシフトに登録されていなければ自動でシフトにも組み込む
-                    if staff_id not in current_staff_ids:
+                    else:
+                        # まだ3人未満なら「未確定」でシフトに組み込む
                         new_shift = Shift(staff_id=staff_id, store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='未確定')
                         db.session.add(new_shift)
                         db.session.commit()
 
-                        # 3人揃ったか再確認して自動確定処理
-                        updated_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
-                        if len(updated_shifts) == 3:
-                            for s in updated_shifts:
+                        # 今回の追加で「未確定」が3人揃ったか確認
+                        unconfirmed_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='未確定').all()
+                        if len(unconfirmed_shifts) == 3:
+                            for s in unconfirmed_shifts:
                                 s.status = '確定'
                                 db.session.add(Notification(staff_id=s.staff_id, content=f"【シフト確定】{date} {start_time}-{end_time} が確定しました。"))
                             db.session.commit()
-                            flash(f'{date} {time_range} を登録しました。3名に達したため【シフト確定】しました！', 'success')
+                            flash(f'{date} {time_range} を登録し、3名に達したため【シフト確定】しました！', 'success')
                         else:
-                            flash(f'{date} {time_range} を空き時間として登録し、自動でシフトへ組み込みました！', 'success')
-                    else:
-                        db.session.commit()
-                        flash(f'{date} {time_range} を空き時間として登録しました。', 'success')
+                            flash(f'{date} {time_range} を登録し、自動でシフトへ組み込みました。', 'success')
                 else:
-                    flash('その時間帯の空き時間は既に登録されています。', 'warning')
-
-        # シフト希望枠へ直接入る処理（手動用も一応残しています）
-        elif action_type == 'register_shift':
-            existing_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
-            current_staff_ids = [s.staff_id for s in existing_shifts]
-
-            if staff_id in current_staff_ids:
-                flash('既にこのシフトに登録されています。', 'warning')
-            elif len(current_staff_ids) >= 3:
-                flash('【過剰防止】この時間帯は既に3名で確定しているため、追加登録できません。', 'danger')
-            else:
-                new_shift = Shift(staff_id=staff_id, store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='未確定')
-                db.session.add(new_shift)
-                db.session.commit()
-
-                updated_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
-                if len(updated_shifts) == 3:
-                    for s in updated_shifts:
-                        s.status = '確定'
-                        db.session.add(Notification(staff_id=s.staff_id, content=f"【シフト確定】{date} {start_time}-{end_time} が確定しました。"))
                     db.session.commit()
-                    flash('3名に達したため【シフト確定】しました！', 'success')
-                else:
-                    flash('シフト希望を登録しました。', 'info')
+                    flash(f'{date} {time_range} の空き時間を登録しました。', 'success')
+            else:
+                flash('その時間帯の空き時間は既に登録されています。', 'warning')
 
     all_shifts = Shift.query.filter_by(store_id=store_id).order_by(Shift.date, Shift.start_time).all()
     my_availabilities = Availability.query.filter_by(staff_id=staff_id).order_by(Availability.date).all()
@@ -237,51 +231,82 @@ def calendar():
 
     return render_template('calendar.html', shifts=all_shifts, my_avails=my_availabilities, my_id=staff_id, notif_count=notif_count)
 
+# ✨ 【コア機能進化】欠勤キャンセル ＆ リザーブ自動繰り上げロジック
 @app.route('/cancel/<int:shift_id>')
 def cancel(shift_id):
     if 'staff_id' not in session:
         return redirect(url_for('login'))
 
     target_shift = Shift.query.get(shift_id)
-    if target_shift and target_shift.staff_id == session['staff_id']:
+    # 辞退する本人のIDを記録
+    leaver_staff_id = session['staff_id']
+
+    if target_shift and target_shift.staff_id == leaver_staff_id:
         store_id = target_shift.store_id
         date = target_shift.date
         start_time = target_shift.start_time
         end_time = target_shift.end_time
+        was_confirmed = (target_shift.status == '確定')
 
+        # 1. 本人のシフトレコードを削除
         db.session.delete(target_shift)
         db.session.commit()
 
-        remaining_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time).all()
+        # 2. もし「確定枠」から人が抜けた場合、リザーブ（補欠）の人がいれば「登録が古い順」で1名繰り上げる
+        if was_confirmed:
+            # Availabilityのcreated_atが古い（＝先に保存した）順にリザーブメンバーを紐づけて探す
+            next_reserve = db.session.query(Shift).\
+                join(Availability, Shift.staff_id == Availability.staff_id).\
+                filter(
+                    Shift.store_id == store_id,
+                    Shift.date == date,
+                    Shift.start_time == start_time,
+                    Shift.end_time == end_time,
+                    Shift.status == 'リザーブ',
+                    Availability.date == date,
+                    Availability.start_time == start_time,
+                    Availability.end_time == end_time
+                ).\
+                order_by(Availability.created_at.asc()).first()
+
+            if next_reserve:
+                # リザーブから「確定」へ昇格！
+                next_reserve.status = '確定'
+                db.session.add(Notification(
+                    staff_id=next_reserve.staff_id,
+                    content=f"【シフト繰り上げ確定】{date} {start_time}-{end_time} に欠員が出たため、リザーブ枠からあなたのシフトが【確定】に繰り上がりました！"
+                ))
+                db.session.commit()
+                flash(f'シフトを辞退しました。リザーブ枠から先着順で次のスタッフ（社員番号ID: {next_reserve.staff_id}）が自動繰り上げ確定しました。', 'success')
+                return redirect(url_for('calendar'))
+
+        # 3. 繰り上げるリザーブメンバーが「誰もいなかった」場合（通常の人手不足通知ロジック）
+        remaining_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
+        # 残ったメンバーを一度「未確定」に戻す
         for s in remaining_shifts:
             s.status = '未確定'
         db.session.commit()
 
+        # 急募の通知（※辞退した本人を除外するロジック）
         if len(remaining_shifts) <= 2:
             already_working_ids = [s.staff_id for s in remaining_shifts]
+            # 既にシフトにいる人と、「辞退した本人(leaver_staff_id)」を【完全に除外】する
+            exclude_ids = already_working_ids + [leaver_staff_id]
             
             available_staffs = Availability.query.filter(
                 Availability.date == date,
                 Availability.start_time == start_time,
                 Availability.end_time == end_time,
-                Availability.staff_id.not_in(already_working_ids)
+                Availability.staff_id.not_in(exclude_ids)
             ).all()
 
-            notified_ids = []
             for avail in available_staffs:
-                notif = Notification(
+                db.session.add(Notification(
                     staff_id=avail.staff_id,
                     content=f"【急募・欠員発生】あなたが空き時間として登録している {date} {start_time}-{end_time} に欠員が出ました。応援に入っていただけませんか？"
-                )
-                db.session.add(notif)
-                notified_ids.append(avail.staff_id)
-            
+                ))
             db.session.commit()
-
-            if notified_ids:
-                flash('シフトを辞退しました。空いているスタッフに応援依頼を送りました。', 'warning')
-            else:
-                flash('シフトを辞退しました。', 'warning')
+            flash('シフトを辞退しました。他の空いているスタッフへヘルプ通知を送りました。（辞退したあなたには通知されません）', 'warning')
         else:
             flash('シフトをキャンセルしました。', 'success')
 
