@@ -28,7 +28,7 @@ class Store(db.Model):
     store_name = db.Column(db.String(50), unique=True, nullable=False)
 
 class Availability(db.Model):
-    """【重要】勤務希望（スタッフが空いている時間を登録するテーブル）"""
+    """勤務希望（スタッフが空いている時間を登録するテーブル）"""
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     staff_id = db.Column(db.Integer, db.ForeignKey('staff.id'), nullable=False)
     date = db.Column(db.String(20), nullable=False)       
@@ -97,6 +97,23 @@ def login():
             flash('店舗名、または社員番号が正しくありません。', 'danger')
             
     return render_template('login.html', stores=Store.query.all())
+
+# ✨ 🆕 新店舗をデータベースに登録するルート設定
+@app.route('/add_store', methods=['POST'])
+def add_store():
+    new_store_name = request.form.get('new_store_name')
+    if new_store_name:
+        # すでに同じ名前の店舗がないかチェック
+        exists = Store.query.filter_by(store_name=new_store_name).first()
+        if not exists:
+            new_store = Store(store_name=new_store_name)
+            db.session.add(new_store)
+            db.session.commit()
+            flash(f'店舗「{new_store_name}」を新しく登録しました！', 'success')
+        else:
+            flash('その店舗名は既に登録されています。', 'warning')
+            
+    return redirect(url_for('login'))
 
 @app.route('/calendar', methods=['GET', 'POST'])
 def calendar():
@@ -222,5 +239,7 @@ def logout():
 
 if __name__ == '__main__':
     with app.app_context():
+        init_master_data()
+    app.run(debug=True, port=5000)
         init_master_data()
     app.run(debug=True, port=5000)
