@@ -15,6 +15,7 @@
                 {% endfor %}
             {% endif %}
         {% endwith %}
+
         <form method="POST">
             <div class="mb-3">
                 <label class="form-label">所属店舗を選択</label>
@@ -30,6 +31,17 @@
             </div>
             <button type="submit" class="btn btn-primary w-100 py-2">ログイン</button>
         </form>
-    </div>
+        <hr class="my-4">
+
+        <form action="/add_store" method="POST">
+            <div class="mb-3">
+                <label class="form-label text-success fw-bold">🆕 新しい店舗を登録する</label>
+                <div class="input-group">
+                    <input type="text" name="new_store_name" class="form-control" placeholder="例：六本木店" required>
+                    <button type="submit" class="btn btn-success">登録</button>
+                </div>
+            </div>
+        </form>
+        </div>
 </body>
 </html>
