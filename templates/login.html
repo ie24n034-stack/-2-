@@ -27,14 +27,15 @@
             </div>
             <div class="mb-3">
                 <label class="form-label">社員番号 (1〜20)</label>
-                <input type="number" name="staff_id" class="form-control" min="1" max="20" placeholder="社員番号を入力" required>
+                <input type="number" name="staff_id" class="form-control" min="1" max="20" placeholder="新規店舗も1〜20でログイン可" required>
             </div>
             <button type="submit" class="btn btn-primary w-100 py-2">ログイン</button>
         </form>
+
         <hr class="my-4">
 
-        <form action="/add_store" method="POST">
-            <div class="mb-3">
+        <form action="/add_store" method="POST" class="mb-3">
+            <div class="mb-2">
                 <label class="form-label text-success fw-bold">🆕 新しい店舗を登録する</label>
                 <div class="input-group">
                     <input type="text" name="new_store_name" class="form-control" placeholder="例：六本木店" required>
@@ -42,6 +43,23 @@
                 </div>
             </div>
         </form>
-        </div>
+
+        <form action="/delete_store" method="POST" onsubmit="return confirm('本当にこの店舗と所属データをすべて削除しますか？');">
+            <div class="mb-2">
+                <label class="form-label text-danger fw-bold">🗑️ 店舗を削除する</label>
+                <div class="input-group">
+                    <select name="store_name" class="form-select" required>
+                        {% for store in stores %}
+                            {% if store.store_name != '渋谷店' %}
+                                <option value="{{ store.store_name }}">{{ store.store_name }}</option>
+                            {% endif %}
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-danger">削除</button>
+                </div>
+            </div>
+        </form>
+
+    </div>
 </body>
 </html>
