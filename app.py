@@ -105,7 +105,6 @@ def login():
             
     return render_template('login.html', stores=Store.query.all())
 
-# ✨【新規追加】新バイトスタッフの登録処理
 @app.route('/add_staff', methods=['POST'])
 def add_staff():
     store_name = request.form.get('store_name')
@@ -117,11 +116,9 @@ def add_staff():
         return redirect(url_for('login'))
         
     if staff_name:
-        # その店舗の現在のスタッフの中で、最大のstaff_numberを取得し、その次の番号（+1）にする
         max_staff_num = db.session.query(db.func.max(Staff.staff_number)).filter(Staff.store_id == store.id).scalar()
         next_staff_number = (max_staff_num or 0) + 1
         
-        # システム全体のStaffデータの主キー(id)が被らないように最大値+1にする
         max_id = db.session.query(db.func.max(Staff.id)).scalar() or 0
         new_id = max_id + 1
         
@@ -135,9 +132,113 @@ def add_staff():
         db.session.add(new_staff)
         db.session.commit()
         
-        flash(f'🎉「{store_name}」に {staff_name} さんを新しく登録しました！社員番号は 【 {next_staff_number} 】 です。この番号でログインしてください。', 'success')
+        flash(f'🎉「{store_name}」に {staff_name} さんを新しく登録しました！社員番号は 【 {next_staff_number} 】 です。', 'success')
     else:
         flash('名前を入力してください。', 'warning')
+        
+    return redirect(url_for('login'))
+
+# ✨【新規追加】退職スタッフのデータ一括削除（シフト自動補填連動）
+@app.route('/delete_staff', methods=['POST'])
+def delete_staff():
+    store_name = request.form.get('store_name')
+    try:
+        staff_number = int(request.form.get('staff_number'))
+    except ValueError:
+        flash('社員番号は数字で入力してください。', 'danger')
+        return redirect(url_for('login'))
+        
+    store = Store.query.filter_by(store_name=store_name).first()
+    if not store:
+        flash('店舗が見つかりませんでした。', 'danger')
+        return redirect(url_for('login'))
+        
+    staff = Staff.query.filter_by(staff_number=staff_number, store_id=store.id).first()
+    if not staff:
+        flash(f'「{store_name}」に社員番号 {staff_number} のスタッフは見つかりませんでした。', 'warning')
+        return redirect(url_for('login'))
+        
+    staff_id = staff.id
+    staff_name = staff.name
+    
+    # 💡 賢い連動：辞める人が入っていたすべてのシフトに対して、穴埋め処理を個別に実行する
+    my_shifts = Shift.query.filter_by(staff_id=staff_id).all()
+    for ts in my_shifts:
+        date = ts.date
+        start_time = ts.start_time
+        end_time = ts.end_time
+        was_confirmed = (ts.status == '確定')
+        
+        db.session.delete(ts)
+        db.session.commit()
+        
+        if was_confirmed:
+            # 先着順でリザーブメンバーを1名繰り上げる
+            next_reserve = db.session.query(Shift).\
+                join(Availability, Shift.staff_id == Availability.staff_id).\
+                filter(
+                    Shift.store_id == store.id,
+                    Shift.date == date,
+                    Shift.start_time == start_time,
+                    Shift.end_time == end_time,
+                    Shift.status == 'リザーブ',
+                    Availability.date == date,
+                    Availability.start_time == start_time,
+                    Availability.end_time == end_time
+                ).\
+                order_by(Availability.created_at.asc()).first()
+
+            if next_reserve:
+                next_reserve.status = '確定'
+                db.session.add(Notification(
+                    staff_id=next_reserve.staff_id,
+                    content=f"【シフト繰り上げ確定】{date} {start_time}-{end_time} に退職による欠員が出たため、リザーブ枠からあなたのシフトが【確定】に繰り上がりました！"
+                ))
+                db.session.commit()
+                continue # 次のシフト処理へ
+
+        # 繰り上げるリザーブがいない場合、残ったメンバーを未確定に戻し、他スタッフへ急募を送る
+        remaining_shifts = Shift.query.filter_by(store_id=store.id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
+        for s in remaining_shifts:
+            db.session.add(Notification(
+                staff_id=s.staff_id,
+                content=f"【欠員発生】一緒に参加している {date} {start_time}-{end_time} のシフトに退職による欠員が出ました。"
+            ))
+            s.status = '未確定'
+        db.session.commit()
+
+        if len(remaining_shifts) <= 2:
+            already_working_ids = [s.staff_id for s in remaining_shifts]
+            exclude_ids = already_working_ids + [staff_id]
+            
+            available_staffs = Availability.query.filter(
+                Availability.date == date,
+                Availability.start_time == start_time,
+                Availability.end_time == end_time,
+                Availability.staff_id.not_in(exclude_ids)
+            ).all()
+
+            for avail in available_staffs:
+                db.session.add(Notification(
+                    staff_id=avail.staff_id,
+                    content=f"【急募・欠員発生】あなたが空き時間として登録している {date} {start_time}-{end_time} に退職による欠員が出ました。応援に入っていただけませんか？"
+                ))
+            db.session.commit()
+
+    # 残りの通知データと空き時間データを一括削除
+    Notification.query.filter_by(staff_id=staff_id).delete()
+    Availability.query.filter_by(staff_id=staff_id).delete()
+    
+    # スタッフ本体を削除
+    db.session.delete(staff)
+    db.session.commit()
+    
+    # 💡 もし今ログインしている本人の番号を削除した場合は自動ログアウトさせる
+    if session.get('staff_id') == staff_id:
+        session.clear()
+        flash(f'自身のアカウント（{staff_name}さん）を削除したため自動ログアウトしました。', 'info')
+    else:
+        flash(f'👤 {staff_name} さん（社員番号: {staff_number}）のデータを完全に削除し、関連シフトの調整を行いました。', 'success')
         
     return redirect(url_for('login'))
 
@@ -207,7 +308,6 @@ def calendar():
         time_range = request.form.get('time_range') 
         start_time, end_time = time_range.split('-')
 
-        # 空き時間登録 ＆ シフト自動・リザーブ組み込み処理
         if action_type == 'register_availability':
             confirmed_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
             already_in_shift = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, staff_id=staff_id).first()
@@ -275,7 +375,6 @@ def cancel(shift_id):
         db.session.commit()
 
         if was_confirmed:
-            # 先着順でリザーブメンバーを1名繰り上げる
             next_reserve = db.session.query(Shift).\
                 join(Availability, Shift.staff_id == Availability.staff_id).\
                 filter(
@@ -300,7 +399,6 @@ def cancel(shift_id):
                 flash(f'シフトを辞退しました。リザーブ枠から先着順で次のスタッフが自動繰り上げ確定しました。', 'success')
                 return redirect(url_for('calendar'))
 
-        # 繰り上げるリザーブメンバーが「誰もいなかった」場合
         remaining_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
         
         for s in remaining_shifts:
@@ -308,7 +406,7 @@ def cancel(shift_id):
                 staff_id=s.staff_id,
                 content=f"【欠員発生】あなたが参加している {date} {start_time}-{end_time} のシフトに欠員が出ました。"
             ))
-            s.status = '未確定' # 未確定状態に戻す
+            s.status = '未確定'
         db.session.commit()
 
         if len(remaining_shifts) <= 2:
