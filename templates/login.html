@@ -8,6 +8,7 @@
 <body class="bg-light container py-5" style="max-width: 430px;">
     <div class="card shadow p-4 mt-5">
         <h4 class="text-center mb-4">🔐 シフト管理システム</h4>
+        
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, msg in messages %}
@@ -26,10 +27,30 @@
                 </select>
             </div>
             <div class="mb-3">
-                <label class="form-label">社員番号 (1〜20)</label>
-                <input type="number" name="staff_id" class="form-control" min="1" max="20" placeholder="新規店舗も1〜20でログイン可" required>
+                <label class="form-label">社員番号</label>
+                <input type="number" name="staff_id" class="form-control" min="1" placeholder="割り当てられた社員番号を入力" required>
             </div>
             <button type="submit" class="btn btn-primary w-100 py-2">ログイン</button>
+        </form>
+
+        <hr class="my-4">
+
+        <form action="/add_staff" method="POST" class="mb-3">
+            <div class="mb-2">
+                <label class="form-label text-primary fw-bold">👤 新しいバイト（スタッフ）を登録する</label>
+                <div class="mb-2">
+                    <select name="store_name" class="form-select" required>
+                        <option value="" disabled selected>所属する店舗を選択</option>
+                        {% for store in stores %}
+                            <option value="{{ store.store_name }}">{{ store.store_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="input-group">
+                    <input type="text" name="staff_name" class="form-control" placeholder="スタッフの名前（例：山田花子）" required>
+                    <button type="submit" class="btn btn-primary">登録</button>
+                </div>
+            </div>
         </form>
 
         <hr class="my-4">
