@@ -105,6 +105,42 @@ def login():
             
     return render_template('login.html', stores=Store.query.all())
 
+# ✨【新規追加】新バイトスタッフの登録処理
+@app.route('/add_staff', methods=['POST'])
+def add_staff():
+    store_name = request.form.get('store_name')
+    staff_name = request.form.get('staff_name')
+    
+    store = Store.query.filter_by(store_name=store_name).first()
+    if not store:
+        flash('選択した店舗が見つかりませんでした。', 'danger')
+        return redirect(url_for('login'))
+        
+    if staff_name:
+        # その店舗の現在のスタッフの中で、最大のstaff_numberを取得し、その次の番号（+1）にする
+        max_staff_num = db.session.query(db.func.max(Staff.staff_number)).filter(Staff.store_id == store.id).scalar()
+        next_staff_number = (max_staff_num or 0) + 1
+        
+        # システム全体のStaffデータの主キー(id)が被らないように最大値+1にする
+        max_id = db.session.query(db.func.max(Staff.id)).scalar() or 0
+        new_id = max_id + 1
+        
+        new_staff = Staff(
+            id=new_id,
+            name=staff_name,
+            store_id=store.id,
+            role='スタッフ',
+            staff_number=next_staff_number
+        )
+        db.session.add(new_staff)
+        db.session.commit()
+        
+        flash(f'🎉「{store_name}」に {staff_name} さんを新しく登録しました！社員番号は 【 {next_staff_number} 】 です。この番号でログインしてください。', 'success')
+    else:
+        flash('名前を入力してください。', 'warning')
+        
+    return redirect(url_for('login'))
+
 @app.route('/add_store', methods=['POST'])
 def add_store():
     new_store_name = request.form.get('new_store_name')
@@ -267,7 +303,6 @@ def cancel(shift_id):
         # 繰り上げるリザーブメンバーが「誰もいなかった」場合
         remaining_shifts = Shift.query.filter_by(store_id=store_id, date=date, start_time=start_time, end_time=end_time, status='確定').all()
         
-        # ✨【今回の修正コア】すでにそのシフトに入っている（確定していた）人たちへ、事実のみの通知を送る
         for s in remaining_shifts:
             db.session.add(Notification(
                 staff_id=s.staff_id,
@@ -280,7 +315,6 @@ def cancel(shift_id):
             already_working_ids = [s.staff_id for s in remaining_shifts]
             exclude_ids = already_working_ids + [leaver_staff_id]
             
-            # その時間帯に空き時間を出している「別のスタッフ」を取得
             available_staffs = Availability.query.filter(
                 Availability.date == date,
                 Availability.start_time == start_time,
@@ -288,7 +322,6 @@ def cancel(shift_id):
                 Availability.staff_id.not_in(exclude_ids)
             ).all()
 
-            # 既にシフトに入っている人以外（応援要請枠）には「応援に入りませんか？」と送る
             for avail in available_staffs:
                 db.session.add(Notification(
                     staff_id=avail.staff_id,
