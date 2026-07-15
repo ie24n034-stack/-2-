@@ -55,6 +55,26 @@
 
         <hr class="my-4">
 
+        <form action="/delete_staff" method="POST" onsubmit="return confirm('本当にこのスタッフを削除しますか？関連するすべてのシフト・空き時間データが削除され、確定シフトに欠員が出る場合は自動で繰り上げやヘルプ通知が飛びます。');" class="mb-3">
+            <div class="mb-2">
+                <label class="form-label text-danger fw-bold">👤 バイト（スタッフ）を削除する</label>
+                <div class="mb-2">
+                    <select name="store_name" class="form-select" required>
+                        <option value="" disabled selected>所属する店舗を選択</option>
+                        {% for store in stores %}
+                            <option value="{{ store.store_name }}">{{ store.store_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="input-group">
+                    <input type="number" name="staff_number" class="form-control" placeholder="削除する社員番号（例：21）" min="1" required>
+                    <button type="submit" class="btn btn-danger">削除</button>
+                </div>
+            </div>
+        </form>
+
+        <hr class="my-4">
+
         <form action="/add_store" method="POST" class="mb-3">
             <div class="mb-2">
                 <label class="form-label text-success fw-bold">🆕 新しい店舗を登録する</label>
